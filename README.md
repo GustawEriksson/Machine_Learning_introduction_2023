@@ -1,6 +1,6 @@
 # Machine Learning Introduction 2023
 ## By Gustaw Eriksson, gustaw.eriksson@ki.se
-A quick and dirty run of the DESeq2 vignette on the parsilla dataset. Please download the DESeq2_workshop.Rmd and open it in RStudio.
+A quick and dirty run of the DESeq2 vignette on the parsilla dataset. Please download the DESeq2_workshop.Rmd from /docs and open it in RStudio. If ypu do not want to run the code, you can download either the .html or .pdf file.
 
 If R and Rstudio is not installed, you can install R from here; https://www.r-project.org/ and RStudio from here; https://posit.co/download/rstudio-desktop/
 
