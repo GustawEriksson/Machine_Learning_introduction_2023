@@ -1,0 +1,302 @@
+---
+title: "ML_DESeq2_workshop"
+output: html_document
+date: "2023-02-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## DESeq2 workshop
+The following pipeline is based on DESeq2 vignette by Love et al. found here: http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#data-quality-assessment-by-sample-clustering-and-visualization
+
+The data used in the vignette and that we will be using is from an experiment on Drosophila melanogaster cell cultures and investigation of the effect of RNAi knock-down of the splicing factor pasilla (Brooks et al. 2011). 
+
+# Loading the packages
+The first thing, is to load the required packages.
+
+```{r, echo=FALSE}
+
+if (!requireNamespace('BiocManager', quietly = TRUE)) install.packages('BiocManager')
+
+install.packages.flag = FALSE
+if (install.packages.flag == TRUE) {
+  BiocManager::install(c("tximport", "readr", "tximportData",
+                       "pasilla", "DESeq2", "vsn", "pheatmap",
+                       "RColorBrewer", "ggplot2", "apeglm", 
+                       "EnchancedVolcano"))
+}
+
+library("tximport")
+library("readr")
+library("tximportData")
+library("pasilla")
+library("DESeq2")
+library("vsn")
+library("pheatmap")
+library("RColorBrewer")
+library("ggplot2")
+library("apeglm")
+library("EnhancedVolcano")
+
+```
+
+## Importing the data and generating the DESeq dataset
+DESeq2 allows for a quick and easy import of test data
+
+```{r, echo=FALSE}
+pasCts <- system.file("extdata",
+                      "pasilla_gene_counts.tsv",
+                      package="pasilla", mustWork=TRUE)
+pasAnno <- system.file("extdata",
+                       "pasilla_sample_annotation.csv",
+                       package="pasilla", mustWork=TRUE)
+cts <- as.matrix(read.csv(pasCts,sep="\t",row.names="gene_id"))
+coldata <- read.csv(pasAnno, row.names=1)
+coldata <- coldata[,c("condition","type")]
+coldata$condition <- factor(coldata$condition)
+coldata$type <- factor(coldata$type)
+```
+
+We look at the countmatrix (cts) and the column data i.e. data groups
+```{r}
+head(cts,10)
+```
+```{r}
+coldata
+```
+Note that these are not in the same order with respect to samples!
+
+It is absolutely critical that the columns of the count matrix and the rows of the column data are in the same order. D
+
+As they are not in the correct order as given, we need to re-arrange one or the other so that they are consistent in terms of sample order (if we do not, later functions would produce an error). We additionally need to chop off the "fb" of the row names of coldata, so the naming is consistent.
+
+```{r}
+rownames(coldata) <- sub("fb", "", rownames(coldata))
+all(rownames(coldata) %in% colnames(cts))
+```
+```{r}
+all(rownames(coldata) == colnames(cts))
+```
+```{r}
+cts <- cts[, rownames(coldata)]
+all(rownames(coldata) == colnames(cts))
+```
+The countmatrix is now in order and we can generate the DESeq dataset
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = cts,
+                              colData = coldata,
+                              design = ~ condition)
+dds
+```
+## Prefiltering the data
+It is not required to prefilter the data, but it is a good habit. It reduces the memory and thus the computing time, but it can also help in visualisation by removing "noise".
+
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+## Setting factor levels
+R chooses the reference when performing differential gene expression analysis by alphabetic order. Therefore, one should set the factor level manually
+```{r}
+dds$condition <- factor(dds$condition, levels = c("untreated","treated"))
+```
+
+## Data transformation and visualisation
+The differential gene expression analysis is done on raw counts. However, for some visualisation, transformed data has to be used. Transformed data implies scaled data. The most common method is logtransform, but other methods are available which are shown below. 
+
+The point of the two demonstrated transformations, the VST and the rlog, is to remove the dependence of the variance on the mean, particularly the high variance of the logarithm of count data when the mean is low. Both VST and rlog use the experiment-wide trend of variance over mean, in order to transform the data to remove the experiment-wide trend.
+
+```{r, echo=FALSE}
+ntd <- normTransform(dds) # Log2(n+1), log2 with pseudocount 1
+vsd <- vst(dds, blind=FALSE) #variance stabilizing transformation
+rld <- rlog(dds, blind=FALSE) # regularized log transformation
+head(assay(vsd), 3)
+```
+
+Plotting the standard deviation of transformed data across all samples against the mean. Observe that the variance differ between the methods. In VST, the variance is stable across
+
+```{r}
+meanSdPlot(assay(ntd))
+1
+```
+```{r}
+meanSdPlot(assay(vsd))
+```
+```{r}
+meanSdPlot(assay(rld))
+```
+
+
+
+## Quality control by sample clustering and visaulization
+Data quality assessment and quality control (i.e. the removal of insufficiently good data) are essential steps of any data analysis. These steps should typically be performed very early in the analysis of a new data set, preceding or in parallel to the differential expression testing.
+
+We define the term quality as fitness for purpose. Our purpose is the detection of differentially expressed genes, and we are looking in particular for samples whose experimental treatment suffered from an anormality that renders the data points obtained from these particular samples detrimental to our purpose.
+
+We will generate three heatmaps. First, we select the top 50 expressed genes by the mean expression across all samples
+```{r}
+select <- order(rowMeans(counts(dds,normalized=FALSE)),
+                decreasing=TRUE)[1:50]
+df <- as.data.frame(colData(dds)[,c("condition","type")])
+```
+
+The first heatmap is without any clustering of the data
+```{r}
+pheatmap(assay(vsd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+```
+For the second, we test with hiearchical clustering
+```{r}
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df)
+```
+Lets compare with non-transformed data i.e. only log2 transformed
+```{r}
+pheatmap(assay(ntd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df)
+```
+In this case, the data is not that different...
+
+For the sake of fun, let us do one massive heatmap
+```{r}
+select_500 <- order(rowMeans(counts(dds,normalized=FALSE)),
+                decreasing=TRUE)[1:500]
+pheatmap(assay(vsd)[select_500,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df)
+```
+
+We can also play around with the kmeans to define the number of clusters to generate
+```{r}
+select_500 <- order(rowMeans(counts(dds,normalized=FALSE)),
+                decreasing=TRUE)[1:500]
+Set_K = 10
+pheatmap(assay(vsd)[select_500,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, kmeans_k = Set_K)
+```
+
+By setting the Kmeans, the rows are aggregated before generating the heatmap
+
+Another way to determine whether the samples are similar or not, is to calculate the euclidean distances between the samples and store the values in a distance matrix which then can be visualised
+
+Calculating the distances:
+```{r}
+sampleDists <- dist(t(assay(vsd)), method = "euclidean")
+head(sampleDists)
+```
+
+And plotting it:
+
+```{r}
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$condition, vsd$type, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+We leave the best to last, which is the PCA loved by most.
+
+```{r}
+plotPCA(vsd, intgroup=c("condition", "type"))
+```
+
+The PCA plot can be further customised with ggplot
+```{r}
+pcaData <- plotPCA(vsd, intgroup=c("condition", "type"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, color=condition, shape=type)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+```
+
+The data looks good. The majority of the variance is shown in PC1 in which we see that the data cluster based on the condition untreated or not. PC2 is explained by the technical difference, being sequence either paired-end or single-read.
+
+## Differential gene expression analysis
+Differential expression analysis based on the Negative Binomial (a.k.a. Gamma-Poisson) distribution, further described in the DESeq2 publication (Love, Huber, and Anders 2014).
+
+```{r}
+dds <- DESeq(dds)
+res <- results(dds)
+res
+```
+
+Shrinkage of effect size (LFC estimates) is useful for visualization and ranking of genes. To shrink the LFC, we pass the dds object to the function lfcShrink. Below we specify to use the apeglm method for effect size shrinkage (Zhu, Ibrahim, and Love 2018), which improves on the previous estimator.
+
+Apeglm is based on a generalised linear model. It provides Bayesian shrinkage estimators for effect sizes for a variety of GLM models, using approximation of the posterior for individual coefficients.
+
+We provide the dds object and the name or number of the coefficient we want to shrink, where the number refers to the order of the coefficient as it appears in resultsNames(dds).
+
+```{r}
+resLFC <- lfcShrink(dds, coef="condition_treated_vs_untreated", type="apeglm")
+resLFC
+```
+
+We can extract the number of differentially expressed genes and summarise the results:
+```{r}
+resOrdered <- res[order(res$padj),]
+head(resOrdered, 10)
+```
+```{r}
+summary(res)
+print("Number of DEGs:")
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+
+The parameters can also be adjusted to show adjusted p-value of 0.05
+```{r}
+res05 <- results(dds, alpha=0.05)
+summary(res05)
+print("Number of DEGs:")
+sum(res05$padj < 0.05, na.rm=TRUE)
+```
+
+Comparing the results to the LFC shrinken
+```{r}
+summary(resLFC)
+print("Number of DEGs:")
+sum(resLFC$padj < 0.05, na.rm=TRUE)
+```
+
+At adjusted p-value 0.1, there are no differences in number of DEG's. But as we lower the cutoff, there is.
+
+The non shrunken data and shrunken can also be compared visually to further explain what shrinkage does:
+```{r}
+plotMA(res, ylim=c(-2,2))
+```
+```{r}
+plotMA(resLFC, ylim=c(-2,2))
+```
+
+From the APEGLM paper: 
+"When the read counts are low or highly variable, the maximum likelihood estimates for the LFCs has high variance, leading to large estimates not representative of true differences, and poor ranking of genes by effect size. One approach is to introduce filtering thresholds and pseudocounts to exclude or moderate estimated LFCs. Filtering may result in a loss of genes from the analysis with true differences in expression, while pseudocounts provide a limited solution that must be adapted per dataset.[...]
+The proposed method, Approximate Posterior Estimation for generalized linear model, apeglm, has lower bias than previously proposed shrinkage estimators, while still reducing variance for those genes with little information for statistical inference."
+
+Lets do a heatmap of our top 50 differentially expressed genes based on padj, showing genes with a padj <= 0.05
+```{r}
+
+#resLFC <- resLFC[!is.na(resLFC$padj),]
+#DE.genes = rownames(resLFC[resLFC$padj < .05 & abs(resLFC$log2FoldChange) > 1,])
+
+resOrdered.LFC <- resLFC[order(resLFC$padj, decreasing = FALSE),]
+resOrdered.LFC.genes = rownames(resOrdered.LFC)[1:50]
+
+pheatmap(assay(vsd)[resOrdered.LFC.genes,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df)
+
+```
+
+We can also visualize the DEG's with a Volcano plot
+```{r}
+EnhancedVolcano(res,
+    lab = rownames(res),
+    x = 'log2FoldChange',
+    y = 'pvalue')
+```
